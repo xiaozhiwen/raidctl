@@ -1,0 +1,222 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Data::Dumper;
+
+my $g_error = '';
+use constant RDCLI => '/opt/MegaRAID/MegaCli/MegaCli64';
+
+use constant DEBUG => 0;
+
+my %PDS = ();
+my %LDS = ();
+main();
+
+sub main {
+    get_ld_info();
+    get_pd_info();
+
+    printf "%-3s %-12s %-7s STRIP      SIZE | %5s\tTYPE\tMEDIA\tDEV\n", 'LID', 'DEVNAME', 'RAID', 'SLOT';
+    print "-----------------------------------------+-------------------------------\n";
+    my $first = 1;
+    my $dev_id = ord('a');
+    foreach my $id(sort keys %LDS) {
+        my %ld = %{$LDS{$id}};
+        my $name = '/dev/sd'.chr($dev_id);
+
+	$first = 1;
+        printf("%3s %-12s RAID\e[1;31m%-3s\e[0m %3sKb  %8s ", $id, $name, $ld{raid}, $ld{strip}, $ld{size});
+        foreach my $pd (@{$ld{array}}) {
+            my $fix = $first ? '' : "                                         ";
+            $first = 0;
+            printf("%s| %5s\t%s\t%s\t%d\n",$fix, $pd->{slot}, $pd->{type}, $pd->{media}, $pd->{dev_id}); 
+        }
+        print "-----------------------------------------+-------------------------------\n";
+        $dev_id +=1;
+    } 
+
+    $first = 1;
+    printf("%-41s", 'unused'); 
+    #print Data::Dumper->Dump([\%PDS]);
+    foreach my $pd_id(sort keys %PDS) {
+        my $pd = $PDS{$pd_id};
+	next if ($pd->{used});
+        my $fix = $first ? '' : "                                         ";
+        $first = 0;
+        printf("%s| %5s\t%s\t%s\t%d\n",$fix, $pd->{slot}, $pd->{type}, $pd->{media}, $pd->{dev_id}); 
+    }
+
+    # no unused disk
+    if ($first) {
+        printf("\n");
+    }
+
+   system(RDCLI . ' -LDGetProp -Cache -LAll -aAll -nolog')
+}
+
+sub get_ld_info() {
+    my $args = '-ldpdinfo -aALL -nolog';
+    my $FD;
+    if (!open($FD, RDCLI." $args|")) {
+        die "exec $args fail: $!";
+    }
+    my $ld_id = 0;
+
+    while (<$FD>) {
+        if (/Number of Virtual Disks: (\d+)/) {
+            my $ld_count = int($1);    
+            next;
+        }
+        
+        if (/^Virtual Drive: (\d+) \(Target Id:/) {
+            $ld_id = int($1);
+            $LDS{$ld_id} = parse_ld_info($FD);
+            next;
+        }
+    }
+
+    if (DEBUG) {
+        printf "Logic Disks==================\n";
+        print Data::Dumper->Dump([\%LDS]);
+    }
+}
+
+sub get_pd_info {
+    my $args = '-PdList -aALL -nolog';
+    my $FD;
+    if (!open($FD, RDCLI." $args|")) {
+        die "exec $args fail: $!";
+    }
+
+    while (<$FD>) {
+        if (/^\s+$/) {
+            my $disk = parse_pd_info($FD, 0);
+            next until exists($disk->{slot});
+            my $slot = $disk->{slot};
+            # update unused disks
+            if (!exists($PDS{$slot})) {
+                $disk->{used} = 1;
+                $PDS{$slot} = $disk;
+            }
+        }
+    }
+
+    if (DEBUG) {
+        print Data::Dumper->Dump([\%PDS]);
+    }
+}
+
+sub parse_ld_info {
+    my ($FD) = @_;
+
+    my @array = ();
+    my %ld = ();
+
+    my $count = 0;
+    while (<$FD>) {
+        if (/^RAID Level\s+: Primary-(\d), Secondary-(\d), RAID Level Qualifier/) {
+            my $raid = 0;    
+            if ($1 eq '5') {
+                $raid = 5;
+            } elsif ($1 eq '1') {
+                $raid = $1.$2;
+            } elsif ($1 eq '0' and $2 eq '0') {
+                $raid = 0;
+            }
+            
+            $ld{raid} = int($raid);
+        } elsif (/^Size\s+: ([\d.]+) (\w+)/) {
+            $ld{size} = sprintf('%.1f%s', $1, $2); 
+        } elsif (/^Strip Size\s+: (\d+) /) {
+            $ld{strip} = int($1);
+        } elsif (/^Number Of Drives\s+: (\d+)/) {
+            $ld{disks} = int($1);
+            $count = int($1);
+        }
+
+        if (/^PD:\s+(\d+) Information/) {
+            my $disk = parse_pd_info($FD);
+            $disk->{used} = 1;
+            push @array, $disk; 
+
+            my $pos = int($1)+1;
+            # 解析完PD后退出
+            if ($count == $pos) {
+                last;
+            } 
+            #print Data::Dumper->Dump([\@logic_disk_array]);
+        }
+        
+        #Sequence Number: 2
+    }
+
+    $ld{array} = \@array;
+
+    return \%ld;
+}
+#PD: 0 Information
+#Enclosure Device ID: 252
+#Slot Number: 0
+#Drive's postion: DiskGroup: 0, Span: 0, Arm: 0
+#Enclosure position: 0
+#Device Id: 14
+#WWN: 5000C5006771BB58
+#Sequence Number: 2
+#Media Error Count: 0
+#Other Error Count: 0
+#Predictive Failure Count: 0
+#Last Predictive Failure Event Seq Number: 0
+#PD Type: SATA
+#Raw Size: 465.761 GB [0x3a386030 Sectors]
+#Non Coerced Size: 465.261 GB [0x3a286030 Sectors]
+#Coerced Size: 464.729 GB [0x3a175800 Sectors]
+#Firmware state: Online, Spun Up
+#Is Commissioned Spare : NO
+#Device Firmware Level: SN03
+#SAS Address(0): 0x4433221103000000
+#Connected Port Number: 3(path0)
+#Foreign State: None
+#Device Speed: 6.0Gb/s
+#Media Type: Hard Disk Device
+#Drive Temperature :27C (80.60 F)
+#PI Eligibility:  No
+#Drive is formatted for PI information:  No
+#PI: No PI
+sub parse_pd_info {
+    my ($FD) = @_;
+
+    my %info = ();
+
+    my $enc_id = '';
+    while (<$FD>) {
+        if (/^Enclosure Device ID: (\d+)/) {
+            $enc_id = $1;
+        } elsif (/^Slot Number: (\d+)/) {
+            $info{slot} = $enc_id.':'.$1; 
+        } elsif (/^Device Id: (\d+)/) {
+            $info{dev_id} = int($1);
+        } elsif (/^PD Type: (\w+)/) {
+            $info{type}   = $1;
+        } elsif (/^Locked: (\w+)/) {
+            $info{lock}   = $1;
+        } elsif (/^Media Type: ([\w ]+)/) {
+            if ($1 eq 'Solid State Device') {
+                $info{media} = 'SSD';
+            } elsif ($1 eq 'Hard Disk Device') {
+                $info{media} = 'HDD';
+            } else {
+                $info{media} = $1; 
+            }
+
+            last;
+        }
+
+    }
+
+    if (DEBUG) {
+        printf("==PD: %s\n", $info{slot});
+        print Data::Dumper->Dump([\%info]);
+    }
+    return \%info;
+}
