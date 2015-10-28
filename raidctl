@@ -96,7 +96,7 @@ sub get_pd_info {
             my $slot = $disk->{slot};
             # update unused disks
             if (!exists($PDS{$slot})) {
-                $disk->{used} = 1;
+                $disk->{used} = 0;
                 $PDS{$slot} = $disk;
             }
         }
@@ -139,16 +139,14 @@ sub parse_ld_info {
             my $disk = parse_pd_info($FD);
             $disk->{used} = 1;
             push @array, $disk; 
+            $PDS{$disk->{slot}} = $disk;
 
             my $pos = int($1)+1;
             # 解析完PD后退出
             if ($count == $pos) {
                 last;
             } 
-            #print Data::Dumper->Dump([\@logic_disk_array]);
         }
-        
-        #Sequence Number: 2
     }
 
     $ld{array} = \@array;
